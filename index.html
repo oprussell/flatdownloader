@@ -47,6 +47,7 @@
       <div class="dropdown-menu" id="formatMenu">
         <div class="dropdown-item selected" data-value="mxl">MXL</div>
         <div class="dropdown-item" data-value="musicxml">MusicXML</div>
+        <div class="dropdown-item" data-value="midi">MIDI</div>
       </div>
     </span>
   </h1>
@@ -94,8 +95,10 @@ $('formatMenu').querySelectorAll('.dropdown-item').forEach(item => {
 formatBtn.addEventListener('click', (e) => { e.stopPropagation(); dropdown.classList.toggle('open'); });
 document.addEventListener('click', () => dropdown.classList.remove('open'));
 
+function fmtExt(fmt) { return fmt === 'midi' ? 'mid' : fmt; }
+
 function updateLabels() {
-  $('go').textContent = 'Download .' + currentFormat;
+  $('go').textContent = 'Download .' + fmtExt(currentFormat);
   const canCopy = currentFormat === 'musicxml';
   $('copyBtn').classList.toggle('hidden', !canCopy);
   $('copyPasted').classList.toggle('hidden', !canCopy);
@@ -228,6 +231,136 @@ function buildScoreXML(json) {
     '<score-partwise version="' + esc(version) + '">' + partListXML + partsXML + '</score-partwise>';
 }
 
+/* ---------- MIDI ---------- */
+function noteToMidiNumber(n) {
+  if (!n.pitch) return null;
+  const stepMap = {C:0,D:2,E:4,F:5,G:7,A:9,B:11};
+  const step = n.pitch.step, octave = parseInt(n.pitch.octave,10);
+  const alter = n.pitch.alter ? parseInt(n.pitch.alter,10) : 0;
+  if (stepMap[step] === undefined || isNaN(octave)) return null;
+  return (octave+1)*12 + stepMap[step] + alter;
+}
+function writeVarLen(value) {
+  const bytes = [value & 0x7F];
+  value >>= 7;
+  while (value > 0) { bytes.unshift((value & 0x7F) | 0x80); value >>= 7; }
+  return bytes;
+}
+function u32(n){ return [(n>>>24)&255,(n>>>16)&255,(n>>>8)&255,n&255]; }
+function u16(n){ return [(n>>>8)&255, n&255]; }
+function strBytes(s){ return Array.from(s).map(c=>c.charCodeAt(0)); }
+function buildTrackChunk(events) {
+  events.sort((a,b)=>a.tick-b.tick);
+  let data = [], lastTick = 0;
+  events.forEach(e => { data = data.concat(writeVarLen(e.tick-lastTick), e.bytes); lastTick = e.tick; });
+  data = data.concat([0x00,0xFF,0x2F,0x00]);
+  return strBytes('MTrk').concat(u32(data.length), data);
+}
+function computeTiming(sp) {
+  const parts = ensureArray(sp.part);
+  const measureCount = parts.length ? ensureArray(parts[0].measure).length : 0;
+  let divisions = 4, beats = 4, beatType = 4;
+  const starts = [0], divisionsAt = [], tempoEvents = [], timeSigEvents = [{tick:0,beats,beatType}];
+  for (let i=0;i<measureCount;i++){
+    let fDiv=null, fBeats=null, fBeatType=null;
+    parts.forEach(part => {
+      const m = ensureArray(part.measure)[i];
+      if (!m) return;
+      ensureArray(m.attributes).forEach(a => {
+        if (a.divisions) fDiv = parseInt(a.divisions,10);
+        if (a.time) { fBeats = parseInt(a.time.beats,10); fBeatType = parseInt(a.time['beat-type'],10); }
+      });
+      ensureArray(m.direction).forEach(d => {
+        if (d.sound && d.sound['$tempo']) tempoEvents.push({tick: starts[i]+tp(d), bpm: parseFloat(d.sound['$tempo'])});
+      });
+    });
+    if (fDiv) divisions = fDiv;
+    divisionsAt[i] = divisions;
+    if (fBeats) { beats = fBeats; beatType = fBeatType; timeSigEvents.push({tick: starts[i], beats, beatType}); }
+    starts.push(starts[i] + Math.max(1, Math.round(beats*divisions*4/beatType)));
+  }
+  return { starts, divisionsAt, globalDivisions: divisionsAt[0]||4, tempoEvents, timeSigEvents };
+}
+function buildTempoTrackEvents(timing) {
+  const events = [];
+  timing.timeSigEvents.forEach(ts => {
+    const denomExp = Math.round(Math.log2(ts.beatType||4));
+    events.push({tick: ts.tick, bytes:[0xFF,0x58,0x04, ts.beats, denomExp, 24,8]});
+  });
+  if (timing.tempoEvents.length) {
+    timing.tempoEvents.forEach(t => {
+      const micros = Math.round(60000000/(t.bpm||120));
+      events.push({tick: t.tick, bytes:[0xFF,0x51,0x03,(micros>>16)&255,(micros>>8)&255,micros&255]});
+    });
+  } else {
+    events.push({tick:0, bytes:[0xFF,0x51,0x03,7,161,32]});
+  }
+  return events;
+}
+function buildPartTrackEvents(part, scorePart, timing) {
+  const events = [];
+  const name = (scorePart && scorePart['part-name']) || 'Part';
+  events.push({tick:0, bytes:[0xFF,0x03].concat(writeVarLen(name.length), strBytes(name))});
+  let channel = 0, program = 0;
+  const mi = scorePart && (Array.isArray(scorePart['midi-instrument']) ? scorePart['midi-instrument'][0] : scorePart['midi-instrument']);
+  if (mi) {
+    if (mi['midi-channel']) channel = Math.max(0, parseInt(mi['midi-channel'],10)-1) % 16;
+    if (mi['midi-program']) program = Math.max(0, parseInt(mi['midi-program'],10)-1) % 128;
+  }
+  events.push({tick:0, bytes:[0xC0|channel, program]});
+
+  const raw = [];
+  ensureArray(part.measure).forEach((m,i) => {
+    const start = timing.starts[i];
+    const scale = timing.globalDivisions / (timing.divisionsAt[i] || timing.globalDivisions);
+    ensureArray(m.note).forEach(n => {
+      if (n.rest) return;
+      const midi = noteToMidiNumber(n);
+      if (midi === null) return;
+      const st = start + Math.round(tp(n)*scale);
+      const dur = Math.max(1, Math.round(parseInt(n.duration||0,10)*scale));
+      const ties = ensureArray(n.tie);
+      raw.push({ voice: n.voice||'1', pitch: midi, start: st, end: st+dur,
+        tieStart: ties.some(t=>t['$type']==='start'), tieStop: ties.some(t=>t['$type']==='stop') });
+    });
+  });
+  raw.sort((a,b)=>a.start-b.start);
+
+  const pending = {}, merged = [];
+  raw.forEach(n => {
+    const key = n.voice+'_'+n.pitch, p = pending[key];
+    if (p && n.tieStop && n.start === p.end) {
+      p.end = n.end; p.tieStart = n.tieStart;
+      if (!n.tieStart) { merged.push(p); delete pending[key]; }
+    } else {
+      if (p) { merged.push(p); delete pending[key]; }
+      if (n.tieStart) pending[key] = n; else merged.push(n);
+    }
+  });
+  Object.values(pending).forEach(p => merged.push(p));
+
+  merged.forEach(n => {
+    events.push({tick:n.start, bytes:[0x90|channel, n.pitch, 80]});
+    events.push({tick:n.end, bytes:[0x80|channel, n.pitch, 0]});
+  });
+  return events;
+}
+function buildMidiBytes(json) {
+  const sp = json['score-partwise'];
+  if (!sp) throw new Error('Unexpected JSON — no score-partwise root found.');
+  const timing = computeTiming(sp);
+  const scoreParts = ensureArray(sp['part-list'] && sp['part-list']['score-part']);
+  const parts = ensureArray(sp.part);
+  const tracks = [buildTrackChunk(buildTempoTrackEvents(timing))];
+  parts.forEach((part,i) => {
+    const spPart = scoreParts[i] || scoreParts.find(x=>x['$id']===part['$id']);
+    tracks.push(buildTrackChunk(buildPartTrackEvents(part, spPart, timing)));
+  });
+  let all = strBytes('MThd').concat(u32(6), u16(1), u16(tracks.length), u16(timing.globalDivisions||4));
+  tracks.forEach(t => { all = all.concat(t); });
+  return new Uint8Array(all);
+}
+
 /* ---------- output ---------- */
 async function downloadScore(xmlString, filename, format) {
   if (format === 'musicxml' || typeof JSZip === 'undefined') {
@@ -269,6 +402,12 @@ async function copyText(str) {
 /* ---------- flow ---------- */
 async function finish(jsonText, filename, action) {
   const json = JSON.parse(jsonText);
+  if (currentFormat === 'midi') {
+    const bytes = buildMidiBytes(json);
+    triggerDownload(new Blob([bytes], { type: 'audio/midi' }), filename);
+    setStatus('Downloaded ' + filename);
+    return;
+  }
   const xml = buildScoreXML(json);
   if (action === 'copy') {
     const ok = await copyText(xml);
@@ -285,7 +424,7 @@ async function runFetchFlow(action) {
   const scoreId = extractScoreId(url);
   if (!scoreId) return setStatus("Couldn't find a score ID in that link.", true);
   const apiUrl = 'https://flat.io/api/v2/scores/' + scoreId + '/revisions/last/json';
-  const filename = extractFilename(url, scoreId, currentFormat);
+  const filename = extractFilename(url, scoreId, fmtExt(currentFormat));
 
   $('go').disabled = true; $('copyBtn').disabled = true;
   $('fallback').style.display = 'none';
@@ -311,7 +450,7 @@ async function runPasteFlow(action) {
   if (!text) return setStatus('Paste the JSON first.', true);
   const url = $('scoreUrl').value.trim();
   const scoreId = extractScoreId(url) || 'score';
-  const filename = extractFilename(url, scoreId, currentFormat);
+  const filename = extractFilename(url, scoreId, fmtExt(currentFormat));
   try {
     setStatus('Converting…');
     await finish(text, filename, action);
