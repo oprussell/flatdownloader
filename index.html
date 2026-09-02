@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Flat → MXL</title>
+<style>
+  :root { --ink:#1c1c1c; --muted:#8a8a84; --line:#e2e0d8; --accent:#2f5d50; --error:#a3342a; --bg:#fbfaf7; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif; }
+  main { max-width:520px; margin:0 auto; padding:90px 24px; }
+  h1 { font-size:20px; margin:0 0 6px; display:flex; align-items:center; gap:6px; }
+  .sub { color:var(--muted); font-size:13px; margin:0 0 28px; }
+  .row { display:flex; gap:8px; }
+  input { flex:1; padding:12px 14px; border:1px solid var(--line); border-radius:7px; font-size:14px; background:#fff; min-width:0; }
+  input:focus { outline:none; border-color:var(--accent); }
+  button { padding:12px 18px; background:var(--accent); color:#fff; border:none; border-radius:7px; font-size:14px; cursor:pointer; white-space:nowrap; }
+  button.secondary { background:#fff; color:var(--accent); border:1px solid var(--line); }
+  button:disabled { opacity:.5; cursor:default; }
+  button:hover:not(:disabled) { opacity:.92; }
+  button.hidden { display:none; }
+
+  .dropdown { position:relative; display:inline-block; }
+  .dropdown-btn { display:inline-flex; align-items:center; gap:5px; background:none; border:none; padding:0; font:inherit; font-size:20px; font-weight:inherit; color:var(--ink); border-bottom:2px solid var(--line); border-radius:0; cursor:pointer; line-height:1.3; }
+  .dropdown-btn:hover { border-bottom-color:var(--accent); }
+  .dropdown-btn .caret { font-size:12px; color:var(--muted); transition:transform .12s ease; }
+  .dropdown.open .dropdown-btn .caret { transform:rotate(180deg); }
+  .dropdown-menu { position:absolute; top:calc(100% + 6px); left:0; background:#fff; border:1px solid var(--line); border-radius:8px; box-shadow:0 4px 16px rgba(0,0,0,.08); min-width:140px; padding:4px; z-index:10; display:none; }
+  .dropdown.open .dropdown-menu { display:block; }
+  .dropdown-item { padding:8px 10px; border-radius:5px; cursor:pointer; font-size:14px; }
+  .dropdown-item:hover { background:#f1efe8; }
+  .dropdown-item.selected { color:var(--accent); font-weight:600; }
+
+  #status { min-height:18px; margin-top:12px; font-size:13px; color:var(--muted); }
+  #fallback { display:none; margin-top:24px; padding-top:20px; border-top:1px solid var(--line); }
+  #fallback p { font-size:13px; color:var(--muted); margin:0 0 10px; }
+  #fallback a { color:var(--accent); text-decoration:underline; }
+  #fallback .row { margin-bottom: 10px; }
+  textarea { width:100%; height:120px; padding:10px; border:1px solid var(--line); border-radius:7px; font-family:monospace; font-size:12px; margin-bottom:10px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Flat →
+    <span class="dropdown" id="formatDropdown">
+      <button type="button" class="dropdown-btn" id="formatBtn">MXL <span class="caret">▾</span></button>
+      <div class="dropdown-menu" id="formatMenu">
+        <div class="dropdown-item selected" data-value="mxl">MXL</div>
+        <div class="dropdown-item" data-value="musicxml">MusicXML</div>
+      </div>
+    </span>
+  </h1>
+  <p class="sub">Paste a published Flat score link. No account, no sign-up, nothing to pay for.</p>
+  <div class="row">
+    <input id="scoreUrl" type="text" placeholder="https://flat.io/score/..." autofocus />
+    <button id="go">Download .mxl</button>
+    <button id="copyBtn" class="secondary hidden">Copy</button>
+  </div>
+  <p id="status"></p>
+
+  <div id="fallback">
+    <p>Your browser blocked the direct request (this happens on some setups). Open <a id="jsonLink" href="#" target="_blank" rel="noopener">this link</a> — if the page shows tabs like "Pretty Print" / "Raw Data", click <strong>Raw Data</strong> first — then select all (Ctrl/Cmd+A), copy, and paste it below.</p>
+    <textarea id="jsonPaste" placeholder="Paste the JSON here"></textarea>
+    <div class="row">
+      <button id="convertPasted">Convert pasted JSON</button>
+      <button id="copyPasted" class="secondary hidden">Copy</button>
+    </div>
+  </div>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script>
+const $ = (id) => document.getElementById(id);
+const statusEl = $('status');
+let currentFormat = 'mxl';
+
+function setStatus(msg, isError) {
+  statusEl.textContent = msg || '';
+  statusEl.style.color = isError ? 'var(--error)' : 'var(--muted)';
+}
+
+/* ---------- custom dropdown ---------- */
+const dropdown = $('formatDropdown');
+const formatBtn = $('formatBtn');
+$('formatMenu').querySelectorAll('.dropdown-item').forEach(item => {
+  item.addEventListener('click', () => {
+    currentFormat = item.dataset.value;
+    formatBtn.firstChild.textContent = item.textContent.trim() + ' ';
+    $('formatMenu').querySelectorAll('.dropdown-item').forEach(i => i.classList.toggle('selected', i === item));
+    dropdown.classList.remove('open');
+    updateLabels();
+  });
+});
+formatBtn.addEventListener('click', (e) => { e.stopPropagation(); dropdown.classList.toggle('open'); });
+document.addEventListener('click', () => dropdown.classList.remove('open'));
+
+function updateLabels() {
+  $('go').textContent = 'Download .' + currentFormat;
+  const canCopy = currentFormat === 'musicxml';
+  $('copyBtn').classList.toggle('hidden', !canCopy);
+  $('copyPasted').classList.toggle('hidden', !canCopy);
+}
+updateLabels();
+
+function extractScoreId(url) {
+  const m = url.match(/[a-f0-9]{24}/i);
+  return m ? m[0] : null;
+}
+function extractFilename(url, scoreId, ext) {
+  try {
+    const path = new URL(url).pathname;
+    const last = path.split('/').filter(Boolean).pop() || '';
+    const slug = last.replace(new RegExp('^' + scoreId + '-?', 'i'), '');
+    return (slug || scoreId) + '.' + ext;
+  } catch { return scoreId + '.' + ext; }
+}
+
+/* ---------- generic Flat-JSON -> MusicXML ---------- */
+const SKIP_KEYS = new Set(['uuid','voiceMapping','staffMapping','voiceIdxToUuidMapping','voiceUuidToIdxMapping','unpitchedMapping','pitchMapping','noteBefore','measure-list']);
+const ORDER = {
+  'score-part': ['identification','part-name','part-name-display','part-abbreviation','part-abbreviation-display','group','score-instrument','midi-device','midi-instrument'],
+  'note': ['grace','cue','chord','pitch','unpitched','rest','duration','tie','instrument','voice','type','dot','accidental','time-modification','stem','notehead','staff','beam','notations','lyric'],
+  'pitch': ['step','alter','octave'],
+  'unpitched': ['display-step','display-octave'],
+  'attributes': ['divisions','key','time','staves','part-symbol','instruments','clef','staff-details','transpose','directive','measure-style'],
+  'key': ['fifths','mode'],
+  'time': ['beats','beat-type'],
+  'clef': ['sign','line','clef-octave-change'],
+  'transpose': ['diatonic','chromatic','octave-change','double'],
+  'direction': ['direction-type','offset','voice','staff','sound'],
+  'metronome': ['beat-unit','beat-unit-dot','per-minute'],
+  'barline': ['bar-style','wavy-line','segno','coda','fermata','ending','repeat'],
+  'notations': ['tied','slur','tuplet','glissando','slide','ornaments','technical','articulations','dynamics','fermata','arpeggiate','non-arpeggiate','accidental-mark','other-notation'],
+  'midi-instrument': ['midi-channel','midi-name','midi-bank','midi-program','midi-unpitched','volume','pan'],
+};
+function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function orderedKeys(tag, keys){ const o=ORDER[tag]; if(!o) return keys; return [...o.filter(k=>keys.includes(k)), ...keys.filter(k=>!o.includes(k))]; }
+
+function toXML(tag, value) {
+  if (value === null || value === undefined) return '';
+  if (Array.isArray(value)) return value.map(v => toXML(tag, v)).join('');
+  if (typeof value === 'object') {
+    let attrs = '', children = '', text = null;
+    const keys = orderedKeys(tag, Object.keys(value));
+    for (const key of keys) {
+      if (SKIP_KEYS.has(key) || key.indexOf('$adagio') === 0) continue;
+      const v = value[key];
+      if (key === 'content') { text = v; continue; }
+      if (key.charAt(0) === '$') { attrs += ' ' + key.slice(1) + '="' + esc(v) + '"'; continue; }
+      children += toXML(key, v);
+    }
+    if (children) return '<' + tag + attrs + '>' + children + '</' + tag + '>';
+    if (text !== null) return '<' + tag + attrs + '>' + esc(text) + '</' + tag + '>';
+    return '<' + tag + attrs + '/>';
+  }
+  return '<' + tag + '>' + esc(value) + '</' + tag + '>';
+}
+function ensureArray(v){ return v===undefined||v===null ? [] : (Array.isArray(v)?v:[v]); }
+function tp(x){ return (x && x['$adagio-location']) ? x['$adagio-location'].timePos : 0; }
+
+function buildMeasure(m) {
+  const number = m['$number'] || '1';
+  const notesByVoice = {};
+  ensureArray(m.note).forEach(n => {
+    const v = n.voice || '1';
+    (notesByVoice[v] = notesByVoice[v] || []).push(n);
+  });
+  const voiceIds = Object.keys(notesByVoice).sort();
+  voiceIds.forEach(v => {
+    const arr = notesByVoice[v];
+    arr.sort((a,b) => tp(a)-tp(b));
+    for (let i=1;i<arr.length;i++){
+      if (tp(arr[i]) === tp(arr[i-1])) arr[i] = Object.assign({chord:{}}, arr[i]);
+    }
+  });
+
+  const others = [];
+  ensureArray(m.attributes).forEach(a => others.push({t: tp(a)-0.5, xml: toXML('attributes', a)}));
+  ensureArray(m.direction).forEach(d => others.push({t: tp(d)-0.4, xml: toXML('direction', d)}));
+  ensureArray(m.harmony).forEach(h => others.push({t: tp(h)-0.3, xml: toXML('harmony', h)}));
+  ensureArray(m.sound).forEach(s => {
+    const xml = toXML('sound', s);
+    if (xml && xml !== '<sound/>') others.push({t: tp(s)-0.2, xml});
+  });
+
+  let leftBar = '', rightBar = '';
+  ensureArray(m.barline).forEach(b => {
+    if (b['$location'] === 'right') rightBar += toXML('barline', b);
+    else leftBar += toXML('barline', b);
+  });
+
+  let body = leftBar;
+  if (voiceIds.length === 0) {
+    others.sort((a,b)=>a.t-b.t).forEach(o => body += o.xml);
+  } else {
+    const timeline = others.slice();
+    notesByVoice[voiceIds[0]].forEach(n => timeline.push({t: tp(n), xml: toXML('note', n)}));
+    timeline.sort((a,b)=>a.t-b.t);
+    timeline.forEach(o => body += o.xml);
+    for (let i=1;i<voiceIds.length;i++){
+      const prevArr = notesByVoice[voiceIds[i-1]];
+      const last = prevArr[prevArr.length-1];
+      const endTime = tp(last) + parseInt(last.duration || 0, 10);
+      body += '<backup><duration>' + endTime + '</duration></backup>';
+      notesByVoice[voiceIds[i]].forEach(n => { body += toXML('note', n); });
+    }
+  }
+  body += rightBar;
+  return '<measure number="' + esc(number) + '">' + body + '</measure>';
+}
+
+function buildScoreXML(json) {
+  const sp = json['score-partwise'];
+  if (!sp) throw new Error('Unexpected JSON — no score-partwise root found.');
+  const version = sp['$version'] || '3.1';
+  const scoreParts = ensureArray(sp['part-list'] && sp['part-list']['score-part']);
+  let partListXML = '<part-list>' + scoreParts.map(p => toXML('score-part', p)).join('') + '</part-list>';
+
+  const parts = ensureArray(sp['part']);
+  let partsXML = parts.map(part => {
+    const id = part['$id'] || 'P1';
+    const measuresXML = ensureArray(part.measure).map(buildMeasure).join('');
+    return '<part id="' + esc(id) + '">' + measuresXML + '</part>';
+  }).join('');
+
+  return '<?xml version="1.0" encoding="UTF-8" standalone="no"?>\n' +
+    '<!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 3.1 Partwise//EN" "http://www.musicxml.org/dtds/partwise.dtd">\n' +
+    '<score-partwise version="' + esc(version) + '">' + partListXML + partsXML + '</score-partwise>';
+}
+
+/* ---------- output ---------- */
+async function downloadScore(xmlString, filename, format) {
+  if (format === 'musicxml' || typeof JSZip === 'undefined') {
+    triggerDownload(new Blob([xmlString], { type: 'application/vnd.recordare.musicxml+xml' }), filename);
+    return;
+  }
+  const zip = new JSZip();
+  zip.file('META-INF/container.xml',
+    '<?xml version="1.0" encoding="UTF-8"?>\n<container><rootfiles><rootfile full-path="score.xml" media-type="application/vnd.recordare.musicxml+xml"/></rootfiles></container>');
+  zip.file('score.xml', xmlString);
+  const blob = await zip.generateAsync({ type: 'blob' });
+  triggerDownload(blob, filename);
+}
+function triggerDownload(blob, filename) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+async function copyText(str) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    try { await navigator.clipboard.writeText(str); return true; } catch (e) {}
+  }
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = str;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.focus(); ta.select();
+    const ok = document.execCommand('copy');
+    ta.remove();
+    return ok;
+  } catch (e) { return false; }
+}
+
+/* ---------- flow ---------- */
+async function finish(jsonText, filename, action) {
+  const json = JSON.parse(jsonText);
+  const xml = buildScoreXML(json);
+  if (action === 'copy') {
+    const ok = await copyText(xml);
+    setStatus(ok ? 'Copied MusicXML to clipboard.' : 'Could not copy — try downloading instead.', !ok);
+  } else {
+    await downloadScore(xml, filename, currentFormat);
+    setStatus('Downloaded ' + filename);
+  }
+}
+
+async function runFetchFlow(action) {
+  const url = $('scoreUrl').value.trim();
+  if (!url) return setStatus('Paste a score link first.', true);
+  const scoreId = extractScoreId(url);
+  if (!scoreId) return setStatus("Couldn't find a score ID in that link.", true);
+  const apiUrl = 'https://flat.io/api/v2/scores/' + scoreId + '/revisions/last/json';
+  const filename = extractFilename(url, scoreId, currentFormat);
+
+  $('go').disabled = true; $('copyBtn').disabled = true;
+  $('fallback').style.display = 'none';
+  setStatus('Fetching…');
+  try {
+    const res = await fetch(apiUrl);
+    if (!res.ok) throw new Error('Score not found or not published (status ' + res.status + ').');
+    const text = await res.text();
+    setStatus('Converting…');
+    await finish(text, filename, action);
+  } catch (err) {
+    console.error(err);
+    $('jsonLink').href = apiUrl;
+    $('fallback').style.display = 'block';
+    setStatus('Could not fetch automatically — see below.', true);
+  } finally {
+    $('go').disabled = false; $('copyBtn').disabled = false;
+  }
+}
+
+async function runPasteFlow(action) {
+  const text = $('jsonPaste').value.trim();
+  if (!text) return setStatus('Paste the JSON first.', true);
+  const url = $('scoreUrl').value.trim();
+  const scoreId = extractScoreId(url) || 'score';
+  const filename = extractFilename(url, scoreId, currentFormat);
+  try {
+    setStatus('Converting…');
+    await finish(text, filename, action);
+  } catch (err) {
+    console.error(err);
+    setStatus('Failed: ' + (err.message || err), true);
+  }
+}
+
+$('go').addEventListener('click', () => runFetchFlow('download'));
+$('copyBtn').addEventListener('click', () => runFetchFlow('copy'));
+$('convertPasted').addEventListener('click', () => runPasteFlow('download'));
+$('copyPasted').addEventListener('click', () => runPasteFlow('copy'));
+$('scoreUrl').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('go').click(); });
+</script>
+</body>
+</html>
