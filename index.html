@@ -33,6 +33,12 @@
   .dropdown-item.selected { color:var(--accent); font-weight:600; }
 
   #status { min-height:18px; margin-top:12px; font-size:13px; color:var(--muted); }
+
+  #progressWrap { display:none; margin-top:10px; }
+  #progressTrack { height:6px; background:var(--line); border-radius:3px; overflow:hidden; }
+  #progressFill { height:100%; width:0%; background:var(--accent); transition:width .15s ease; }
+  #progressLabel { font-size:12px; color:var(--muted); margin:6px 0 0; }
+
   #fallback { display:none; margin-top:24px; padding-top:20px; border-top:1px solid var(--line); }
   #fallback p { font-size:13px; color:var(--muted); margin:0 0 10px; }
   #fallback a { color:var(--accent); text-decoration:underline; }
@@ -60,6 +66,10 @@
     <button id="copyBtn" class="secondary hidden">Copy Data</button>
   </div>
   <p id="status"></p>
+  <div id="progressWrap">
+    <div id="progressTrack"><div id="progressFill"></div></div>
+    <p id="progressLabel"></p>
+  </div>
 
   <div id="fallback">
     <p>Your browser blocked the direct request (this happens on some setups). Open <a id="jsonLink" href="#" target="_blank" rel="noopener">this link</a> — if the page shows tabs like "Pretty Print" / "Raw Data", click <strong>Raw Data</strong> first — then select all (Ctrl/Cmd+A), copy, and paste it below.</p>
@@ -80,6 +90,19 @@ let currentFormat = 'mxl';
 function setStatus(msg, isError) {
   statusEl.textContent = msg || '';
   statusEl.style.color = isError ? 'var(--error)' : 'var(--muted)';
+}
+
+/* ---------- progress bar ---------- */
+function showProgress() {
+  $('progressWrap').style.display = 'block';
+  setProgress(0, '');
+}
+function hideProgress() {
+  $('progressWrap').style.display = 'none';
+}
+function setProgress(pct, label) {
+  $('progressFill').style.width = Math.max(0, Math.min(100, pct)) + '%';
+  $('progressLabel').textContent = label || '';
 }
 
 /* ---------- custom dropdown ---------- */
@@ -122,7 +145,7 @@ function extractFilename(url, scoreId, ext) {
 const SKIP_KEYS = new Set(['uuid','voiceMapping','staffMapping','voiceIdxToUuidMapping','voiceUuidToIdxMapping','unpitchedMapping','pitchMapping','noteBefore','measure-list']);
 const ORDER = {
   'score-part': ['identification','part-name','part-name-display','part-abbreviation','part-abbreviation-display','group','score-instrument','midi-device','midi-instrument'],
-  'note': ['grace','cue','chord','pitch','unpitched','rest','duration','tie','instrument','voice','type','dot','accidental','time-modification','stem','notehead','staff','beam','notations','lyric'],
+  'note': ['grace','cue','chord','pitch','unpitched','rest','duration','tie','instrument','voice','type','dot','accidental','time-modification','stem','notehead','notehead-text','staff','beam','notations','lyric','play'],
   'pitch': ['step','alter','octave'],
   'unpitched': ['display-step','display-octave'],
   'attributes': ['divisions','key','time','staves','part-symbol','instruments','clef','staff-details','transpose','directive','measure-style'],
@@ -141,18 +164,24 @@ function orderedKeys(tag, keys){ const o=ORDER[tag]; if(!o) return keys; return 
 
 function toXML(tag, value) {
   if (value === null || value === undefined) return '';
-  if (Array.isArray(value)) return value.map(v => toXML(tag, v)).join('');
+  if (Array.isArray(value)) {
+    let out = '';
+    for (let i = 0; i < value.length; i++) out += toXML(tag, value[i]);
+    return out;
+  }
   if (typeof value === 'object') {
-    let attrs = '', children = '', text = null;
+    let attrs = '';
+    const childParts = [];
+    let text = null;
     const keys = orderedKeys(tag, Object.keys(value));
     for (const key of keys) {
       if (SKIP_KEYS.has(key) || key.indexOf('$adagio') === 0) continue;
       const v = value[key];
       if (key === 'content') { text = v; continue; }
       if (key.charAt(0) === '$') { attrs += ' ' + key.slice(1) + '="' + esc(v) + '"'; continue; }
-      children += toXML(key, v);
+      childParts.push(toXML(key, v));
     }
-    if (children) return '<' + tag + attrs + '>' + children + '</' + tag + '>';
+    if (childParts.length) return '<' + tag + attrs + '>' + childParts.join('') + '</' + tag + '>';
     if (text !== null) return '<' + tag + attrs + '>' + esc(text) + '</' + tag + '>';
     return '<' + tag + attrs + '/>';
   }
@@ -163,27 +192,52 @@ function tp(x){ return (x && x['$adagio-location']) ? x['$adagio-location'].time
 
 function buildMeasure(m) {
   const number = m['$number'] || '1';
-  const notesByVoice = {};
+
+  // Group notes by staff, then by voice within staff. Grouping by voice
+  // alone (the old approach) silently merges notes from different staves
+  // whenever they reuse the same voice number — common on piano/organ
+  // parts in bigger arrangements — which turns unrelated notes into bogus
+  // chords. Keying on staff+voice avoids that, and sorting keys
+  // numerically (not as strings) avoids voice "10" sorting before "2".
+  const groups = {};       // "staff:voice" -> notes[]
+  const staffOrder = [];
+  const voicesByStaff = {};
   ensureArray(m.note).forEach(n => {
-    const v = n.voice || '1';
-    (notesByVoice[v] = notesByVoice[v] || []).push(n);
+    const staff = String(n.staff || '1');
+    const voice = String(n.voice || '1');
+    const key = staff + ':' + voice;
+    if (!groups[key]) {
+      groups[key] = [];
+      if (staffOrder.indexOf(staff) === -1) staffOrder.push(staff);
+      (voicesByStaff[staff] = voicesByStaff[staff] || []).push(key);
+    }
+    groups[key].push(n);
   });
-  const voiceIds = Object.keys(notesByVoice).sort();
-  voiceIds.forEach(v => {
-    const arr = notesByVoice[v];
-    arr.sort((a,b) => tp(a)-tp(b));
-    for (let i=1;i<arr.length;i++){
-      if (tp(arr[i]) === tp(arr[i-1])) arr[i] = Object.assign({chord:{}}, arr[i]);
+  staffOrder.sort((a, b) => (parseInt(a, 10) || 0) - (parseInt(b, 10) || 0));
+  Object.keys(voicesByStaff).forEach(staff => {
+    voicesByStaff[staff].sort((a, b) => {
+      const va = parseInt(a.split(':')[1], 10) || 0;
+      const vb = parseInt(b.split(':')[1], 10) || 0;
+      return va - vb;
+    });
+  });
+
+  // Sort each group by time and mark simultaneous notes as chords.
+  Object.keys(groups).forEach(key => {
+    const arr = groups[key];
+    arr.sort((a, b) => tp(a) - tp(b));
+    for (let i = 1; i < arr.length; i++) {
+      if (tp(arr[i]) === tp(arr[i - 1])) arr[i] = Object.assign({ chord: {} }, arr[i]);
     }
   });
 
   const others = [];
-  ensureArray(m.attributes).forEach(a => others.push({t: tp(a)-0.5, xml: toXML('attributes', a)}));
-  ensureArray(m.direction).forEach(d => others.push({t: tp(d)-0.4, xml: toXML('direction', d)}));
-  ensureArray(m.harmony).forEach(h => others.push({t: tp(h)-0.3, xml: toXML('harmony', h)}));
+  ensureArray(m.attributes).forEach(a => others.push({ t: tp(a) - 0.5, xml: toXML('attributes', a) }));
+  ensureArray(m.direction).forEach(d => others.push({ t: tp(d) - 0.4, xml: toXML('direction', d) }));
+  ensureArray(m.harmony).forEach(h => others.push({ t: tp(h) - 0.3, xml: toXML('harmony', h) }));
   ensureArray(m.sound).forEach(s => {
     const xml = toXML('sound', s);
-    if (xml && xml !== '<sound/>') others.push({t: tp(s)-0.2, xml});
+    if (xml && xml !== '<sound/>') others.push({ t: tp(s) - 0.2, xml });
   });
 
   let leftBar = '', rightBar = '';
@@ -192,56 +246,117 @@ function buildMeasure(m) {
     else leftBar += toXML('barline', b);
   });
 
-  let body = leftBar;
-  if (voiceIds.length === 0) {
-    others.sort((a,b)=>a.t-b.t).forEach(o => body += o.xml);
-  } else {
-    const timeline = others.slice();
-    notesByVoice[voiceIds[0]].forEach(n => timeline.push({t: tp(n), xml: toXML('note', n)}));
-    timeline.sort((a,b)=>a.t-b.t);
-    timeline.forEach(o => body += o.xml);
-    for (let i=1;i<voiceIds.length;i++){
-      const prevArr = notesByVoice[voiceIds[i-1]];
-      const last = prevArr[prevArr.length-1];
-      const endTime = tp(last) + parseInt(last.duration || 0, 10);
-      body += '<backup><duration>' + endTime + '</duration></backup>';
-      notesByVoice[voiceIds[i]].forEach(n => { body += toXML('note', n); });
-    }
+  // How far the write "cursor" moves through a voice/staff group, assuming
+  // it starts at the top of the measure — this is exactly what a
+  // following <backup> needs to undo.
+  function groupSpan(arr) {
+    let end = 0;
+    arr.forEach(n => {
+      const noteEnd = tp(n) + (parseInt(n.duration, 10) || 0);
+      if (noteEnd > end) end = noteEnd;
+    });
+    return end;
   }
-  body += rightBar;
-  return '<measure number="' + esc(number) + '">' + body + '</measure>';
+
+  const bodyParts = [leftBar];
+
+  if (staffOrder.length === 0) {
+    // No notes at all in this measure — just place attributes/directions/etc.
+    others.sort((a, b) => a.t - b.t).forEach(o => bodyParts.push(o.xml));
+  } else {
+    let firstGroup = true;
+    let prevArr = null;
+    staffOrder.forEach(staff => {
+      voicesByStaff[staff].forEach(key => {
+        const arr = groups[key];
+        if (firstGroup) {
+          const timeline = others.slice();
+          arr.forEach(n => timeline.push({ t: tp(n), xml: toXML('note', n) }));
+          timeline.sort((a, b) => a.t - b.t);
+          timeline.forEach(o => bodyParts.push(o.xml));
+          firstGroup = false;
+        } else {
+          // MusicXML requires <backup><duration> to be positive and non-zero.
+          // Skip the element entirely rather than ever emit "0" — that's
+          // invalid content and exactly the kind of thing a lenient reader
+          // (MuseScore) will silently patch around but a strict one
+          // (Noteflight) will reject outright.
+          const backupDuration = Math.round(groupSpan(prevArr));
+          if (backupDuration > 0) {
+            bodyParts.push('<backup><duration>' + backupDuration + '</duration></backup>');
+          }
+          arr.forEach(n => bodyParts.push(toXML('note', n)));
+        }
+        prevArr = arr;
+      });
+    });
+  }
+
+  bodyParts.push(rightBar);
+  return '<measure number="' + esc(number) + '">' + bodyParts.join('') + '</measure>';
 }
 
-function buildScoreXML(json) {
+/* ---------- top-level score header (title, composer, etc.) ---------- */
+function buildScoreHeader(sp) {
+  let header = '';
+  ['work', 'movement-number', 'movement-title', 'identification', 'defaults'].forEach(key => {
+    if (sp[key] !== undefined) header += toXML(key, sp[key]);
+  });
+  if (sp.credit !== undefined) header += toXML('credit', sp.credit);
+  return header;
+}
+
+async function buildScoreXMLAsync(json, onProgress) {
   const sp = json['score-partwise'];
   if (!sp) throw new Error('Unexpected JSON — no score-partwise root found.');
   const version = sp['$version'] || '3.1';
   const scoreParts = ensureArray(sp['part-list'] && sp['part-list']['score-part']);
-  let partListXML = '<part-list>' + scoreParts.map(p => toXML('score-part', p)).join('') + '</part-list>';
+  const partListXML = '<part-list>' + scoreParts.map(p => toXML('score-part', p)).join('') + '</part-list>';
+  const header = buildScoreHeader(sp);
 
   const parts = ensureArray(sp['part']);
-  let partsXML = parts.map(part => {
+  const total = parts.length || 1;
+  const partsXML = [];
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i];
     const id = part['$id'] || 'P1';
     const measuresXML = ensureArray(part.measure).map(buildMeasure).join('');
-    return '<part id="' + esc(id) + '">' + measuresXML + '</part>';
-  }).join('');
+    partsXML.push('<part id="' + esc(id) + '">' + measuresXML + '</part>');
+    if (onProgress) onProgress(i + 1, total);
+    // Yield to the browser between parts so the tab stays responsive and
+    // the progress bar can actually repaint on big scores.
+    await new Promise(r => setTimeout(r, 0));
+  }
 
+  // Deliberately no DOCTYPE here. It would point at an external DTD
+  // (musicxml.org), and strict/sandboxed XML parsers — which is what a lot
+  // of "Invalid file" checkers are — often refuse to fetch external
+  // entities at all and reject the whole document rather than skip it.
+  // The version="..." attribute below is all a reader actually needs;
+  // dropping the DOCTYPE is valid and is what a lot of real-world
+  // MusicXML/MXL files do.
   return '<?xml version="1.0" encoding="UTF-8" standalone="no"?>\n' +
-    '<!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 3.1 Partwise//EN" "http://www.musicxml.org/dtds/partwise.dtd">\n' +
-    '<score-partwise version="' + esc(version) + '">' + partListXML + partsXML + '</score-partwise>';
+    '<score-partwise version="' + esc(version) + '">' + header + partListXML + partsXML.join('') + '</score-partwise>';
 }
 
 /* ---------- output ---------- */
-async function downloadScore(xmlString, filename, format) {
+async function downloadScore(xmlString, filename, format, onZipProgress) {
   if (format === 'musicxml' || typeof JSZip === 'undefined') {
     triggerDownload(new Blob([xmlString], { type: 'application/vnd.recordare.musicxml+xml' }), filename);
     return;
   }
   const zip = new JSZip();
+  // Recommended-but-often-skipped: a "mimetype" file, stored uncompressed,
+  // as the very first entry in the zip. This mirrors the container
+  // convention MusicXML 3.1+ recommends and some stricter readers check for.
+  zip.file('mimetype', 'application/vnd.recordare.musicxml', { compression: 'STORE' });
   zip.file('META-INF/container.xml',
-    '<?xml version="1.0" encoding="UTF-8"?>\n<container><rootfiles><rootfile full-path="score.xml" media-type="application/vnd.recordare.musicxml+xml"/></rootfiles></container>');
-  zip.file('score.xml', xmlString);
-  const blob = await zip.generateAsync({ type: 'blob' });
+    '<?xml version="1.0" encoding="UTF-8"?>\n<container><rootfiles><rootfile full-path="score.xml" media-type="application/vnd.recordare.musicxml+xml"/></rootfiles></container>',
+    { compression: 'STORE' });
+  zip.file('score.xml', xmlString, { compression: 'STORE' });
+  const blob = await zip.generateAsync({ type: 'blob', compression: 'STORE' }, (meta) => {
+    if (onZipProgress) onZipProgress(meta.percent);
+  });
   triggerDownload(blob, filename);
 }
 function triggerDownload(blob, filename) {
@@ -271,15 +386,36 @@ async function copyText(str) {
 
 /* ---------- flow ---------- */
 async function finish(jsonText, filename, action) {
+  showProgress();
+  setProgress(4, 'Parsing score data…');
+  await new Promise(r => setTimeout(r, 0));
   const json = JSON.parse(jsonText);
-  const xml = buildScoreXML(json);
+
+  setProgress(8, 'Converting to MusicXML…');
+  const xml = await buildScoreXMLAsync(json, (done, total) => {
+    const pct = 8 + Math.round((done / total) * 62); // 8–70%
+    setProgress(pct, 'Converting to MusicXML… (' + done + '/' + total + ' parts)');
+  });
+
   if (action === 'copy') {
+    setProgress(90, 'Copying to clipboard…');
     const ok = await copyText(xml);
+    hideProgress();
     setStatus(ok ? 'Copied MusicXML to clipboard.' : 'Could not copy — try downloading instead.', !ok);
-  } else {
-    await downloadScore(xml, filename, currentFormat);
-    setStatus('Downloaded ' + filename);
+    return;
   }
+
+  if (currentFormat === 'mxl') {
+    await downloadScore(xml, filename, 'mxl', (pct) => {
+      setProgress(70 + Math.round(pct * 0.3), 'Packaging .mxl… ' + Math.round(pct) + '%'); // 70–100%
+    });
+  } else {
+    setProgress(90, 'Preparing download…');
+    await downloadScore(xml, filename, 'musicxml');
+  }
+  setProgress(100, 'Done.');
+  setStatus('Downloaded ' + filename);
+  setTimeout(hideProgress, 1000);
 }
 
 async function runFetchFlow(action) {
@@ -297,10 +433,11 @@ async function runFetchFlow(action) {
     const res = await fetch(apiUrl);
     if (!res.ok) throw new Error('Score not found or not published (status ' + res.status + ').');
     const text = await res.text();
-    setStatus('Converting…');
+    setStatus('');
     await finish(text, filename, action);
   } catch (err) {
     console.error(err);
+    hideProgress();
     $('jsonLink').href = apiUrl;
     $('fallback').style.display = 'block';
     setStatus('Could not fetch automatically — see below.', true);
@@ -316,10 +453,10 @@ async function runPasteFlow(action) {
   const scoreId = extractScoreId(url) || 'score';
   const filename = extractFilename(url, scoreId, currentFormat);
   try {
-    setStatus('Converting…');
     await finish(text, filename, action);
   } catch (err) {
     console.error(err);
+    hideProgress();
     setStatus('Failed: ' + (err.message || err), true);
   }
 }
