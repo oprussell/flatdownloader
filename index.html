@@ -9,7 +9,8 @@
   * { box-sizing: border-box; }
   body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif; }
   main { max-width:520px; margin:0 auto; padding:90px 24px; }
-  h1 { font-size:20px; margin:0 0 6px; display:flex; align-items:center; gap:6px; }
+  h1 { font-size:20px; margin:0 0 6px; display:flex; align-items:center; gap:8px; }
+  h1 svg { width:22px; height:22px; flex-shrink:0; }
   .sub { color:var(--muted); font-size:13px; margin:0 0 28px; }
   .row { display:flex; gap:8px; }
   input { flex:1; padding:12px 14px; border:1px solid var(--line); border-radius:7px; font-size:14px; background:#fff; min-width:0; }
@@ -41,13 +42,14 @@
 </head>
 <body>
 <main>
-  <h1>Flat →
+  <h1>
+    <svg viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M503.234 94.857c-4.882-41.468-44.618-81.209-86.091-86.091q-161.146-17.532-322.286 0c-41.473 4.878-81.209 44.623-86.091 86.09q-17.532 161.147 0 322.287c4.882 41.473 44.618 81.209 86.09 86.091q161.147 17.532 322.287 0c41.473-4.882 81.209-44.618 86.091-86.091q17.532-161.14 0-322.286M105.17 256.952c-3.3 0-6.637-.961-9.565-2.969-7.716-5.291-9.68-15.836-4.389-23.552l92.466-134.826c5.29-7.716 15.835-9.68 23.551-4.389s9.679 15.836 4.389 23.552l-92.47 134.826c-3.283 4.788-8.587 7.358-13.982 7.358m24.051 36.01L264.541 95.65c5.291-7.716 15.836-9.679 23.552-4.388 7.716 5.29 9.679 15.835 4.388 23.551l-135.32 197.312c-3.283 4.787-8.591 7.362-13.986 7.362-3.301 0-6.637-.961-9.566-2.969-7.711-5.295-9.679-15.84-4.388-23.556m23.288 130.651c-3.3 0-6.637-.962-9.565-2.97-7.716-5.29-9.679-15.835-4.389-23.551L345.301 95.637c5.29-7.717 15.835-9.68 23.551-4.389s9.679 15.836 4.389 23.552L166.495 416.255c-3.287 4.787-8.591 7.358-13.986 7.358m94.95-7.259c-3.282 4.788-8.591 7.363-13.986 7.363-3.3 0-6.637-.961-9.566-2.97-7.716-5.29-9.679-15.835-4.388-23.551l135.32-197.312c5.291-7.716 15.836-9.679 23.552-4.388 7.716 5.29 9.679 15.835 4.388 23.551zm173.329-134.785L328.318 416.4c-3.282 4.787-8.591 7.362-13.985 7.362-3.301 0-6.637-.961-9.566-2.969-7.716-5.291-9.679-15.836-4.389-23.552l92.47-134.831c5.291-7.716 15.836-9.679 23.552-4.388s9.679 15.831 4.388 23.547" fill="#1c1c1c"/></svg>
+    Flat →
     <span class="dropdown" id="formatDropdown">
       <button type="button" class="dropdown-btn" id="formatBtn">MXL <span class="caret">▾</span></button>
       <div class="dropdown-menu" id="formatMenu">
         <div class="dropdown-item selected" data-value="mxl">MXL</div>
         <div class="dropdown-item" data-value="musicxml">MusicXML</div>
-        <div class="dropdown-item" data-value="midi">MIDI</div>
       </div>
     </span>
   </h1>
@@ -55,7 +57,7 @@
   <div class="row">
     <input id="scoreUrl" type="text" placeholder="https://flat.io/score/..." autofocus />
     <button id="go">Download .mxl</button>
-    <button id="copyBtn" class="secondary hidden">Copy</button>
+    <button id="copyBtn" class="secondary hidden">Copy Data</button>
   </div>
   <p id="status"></p>
 
@@ -64,7 +66,7 @@
     <textarea id="jsonPaste" placeholder="Paste the JSON here"></textarea>
     <div class="row">
       <button id="convertPasted">Convert pasted JSON</button>
-      <button id="copyPasted" class="secondary hidden">Copy</button>
+      <button id="copyPasted" class="secondary hidden">Copy Data</button>
     </div>
   </div>
 </main>
@@ -95,10 +97,8 @@ $('formatMenu').querySelectorAll('.dropdown-item').forEach(item => {
 formatBtn.addEventListener('click', (e) => { e.stopPropagation(); dropdown.classList.toggle('open'); });
 document.addEventListener('click', () => dropdown.classList.remove('open'));
 
-function fmtExt(fmt) { return fmt === 'midi' ? 'mid' : fmt; }
-
 function updateLabels() {
-  $('go').textContent = 'Download .' + fmtExt(currentFormat);
+  $('go').textContent = 'Download .' + currentFormat;
   const canCopy = currentFormat === 'musicxml';
   $('copyBtn').classList.toggle('hidden', !canCopy);
   $('copyPasted').classList.toggle('hidden', !canCopy);
@@ -231,136 +231,6 @@ function buildScoreXML(json) {
     '<score-partwise version="' + esc(version) + '">' + partListXML + partsXML + '</score-partwise>';
 }
 
-/* ---------- MIDI ---------- */
-function noteToMidiNumber(n) {
-  if (!n.pitch) return null;
-  const stepMap = {C:0,D:2,E:4,F:5,G:7,A:9,B:11};
-  const step = n.pitch.step, octave = parseInt(n.pitch.octave,10);
-  const alter = n.pitch.alter ? parseInt(n.pitch.alter,10) : 0;
-  if (stepMap[step] === undefined || isNaN(octave)) return null;
-  return (octave+1)*12 + stepMap[step] + alter;
-}
-function writeVarLen(value) {
-  const bytes = [value & 0x7F];
-  value >>= 7;
-  while (value > 0) { bytes.unshift((value & 0x7F) | 0x80); value >>= 7; }
-  return bytes;
-}
-function u32(n){ return [(n>>>24)&255,(n>>>16)&255,(n>>>8)&255,n&255]; }
-function u16(n){ return [(n>>>8)&255, n&255]; }
-function strBytes(s){ return Array.from(s).map(c=>c.charCodeAt(0)); }
-function buildTrackChunk(events) {
-  events.sort((a,b)=>a.tick-b.tick);
-  let data = [], lastTick = 0;
-  events.forEach(e => { data = data.concat(writeVarLen(e.tick-lastTick), e.bytes); lastTick = e.tick; });
-  data = data.concat([0x00,0xFF,0x2F,0x00]);
-  return strBytes('MTrk').concat(u32(data.length), data);
-}
-function computeTiming(sp) {
-  const parts = ensureArray(sp.part);
-  const measureCount = parts.length ? ensureArray(parts[0].measure).length : 0;
-  let divisions = 4, beats = 4, beatType = 4;
-  const starts = [0], divisionsAt = [], tempoEvents = [], timeSigEvents = [{tick:0,beats,beatType}];
-  for (let i=0;i<measureCount;i++){
-    let fDiv=null, fBeats=null, fBeatType=null;
-    parts.forEach(part => {
-      const m = ensureArray(part.measure)[i];
-      if (!m) return;
-      ensureArray(m.attributes).forEach(a => {
-        if (a.divisions) fDiv = parseInt(a.divisions,10);
-        if (a.time) { fBeats = parseInt(a.time.beats,10); fBeatType = parseInt(a.time['beat-type'],10); }
-      });
-      ensureArray(m.direction).forEach(d => {
-        if (d.sound && d.sound['$tempo']) tempoEvents.push({tick: starts[i]+tp(d), bpm: parseFloat(d.sound['$tempo'])});
-      });
-    });
-    if (fDiv) divisions = fDiv;
-    divisionsAt[i] = divisions;
-    if (fBeats) { beats = fBeats; beatType = fBeatType; timeSigEvents.push({tick: starts[i], beats, beatType}); }
-    starts.push(starts[i] + Math.max(1, Math.round(beats*divisions*4/beatType)));
-  }
-  return { starts, divisionsAt, globalDivisions: divisionsAt[0]||4, tempoEvents, timeSigEvents };
-}
-function buildTempoTrackEvents(timing) {
-  const events = [];
-  timing.timeSigEvents.forEach(ts => {
-    const denomExp = Math.round(Math.log2(ts.beatType||4));
-    events.push({tick: ts.tick, bytes:[0xFF,0x58,0x04, ts.beats, denomExp, 24,8]});
-  });
-  if (timing.tempoEvents.length) {
-    timing.tempoEvents.forEach(t => {
-      const micros = Math.round(60000000/(t.bpm||120));
-      events.push({tick: t.tick, bytes:[0xFF,0x51,0x03,(micros>>16)&255,(micros>>8)&255,micros&255]});
-    });
-  } else {
-    events.push({tick:0, bytes:[0xFF,0x51,0x03,7,161,32]});
-  }
-  return events;
-}
-function buildPartTrackEvents(part, scorePart, timing) {
-  const events = [];
-  const name = (scorePart && scorePart['part-name']) || 'Part';
-  events.push({tick:0, bytes:[0xFF,0x03].concat(writeVarLen(name.length), strBytes(name))});
-  let channel = 0, program = 0;
-  const mi = scorePart && (Array.isArray(scorePart['midi-instrument']) ? scorePart['midi-instrument'][0] : scorePart['midi-instrument']);
-  if (mi) {
-    if (mi['midi-channel']) channel = Math.max(0, parseInt(mi['midi-channel'],10)-1) % 16;
-    if (mi['midi-program']) program = Math.max(0, parseInt(mi['midi-program'],10)-1) % 128;
-  }
-  events.push({tick:0, bytes:[0xC0|channel, program]});
-
-  const raw = [];
-  ensureArray(part.measure).forEach((m,i) => {
-    const start = timing.starts[i];
-    const scale = timing.globalDivisions / (timing.divisionsAt[i] || timing.globalDivisions);
-    ensureArray(m.note).forEach(n => {
-      if (n.rest) return;
-      const midi = noteToMidiNumber(n);
-      if (midi === null) return;
-      const st = start + Math.round(tp(n)*scale);
-      const dur = Math.max(1, Math.round(parseInt(n.duration||0,10)*scale));
-      const ties = ensureArray(n.tie);
-      raw.push({ voice: n.voice||'1', pitch: midi, start: st, end: st+dur,
-        tieStart: ties.some(t=>t['$type']==='start'), tieStop: ties.some(t=>t['$type']==='stop') });
-    });
-  });
-  raw.sort((a,b)=>a.start-b.start);
-
-  const pending = {}, merged = [];
-  raw.forEach(n => {
-    const key = n.voice+'_'+n.pitch, p = pending[key];
-    if (p && n.tieStop && n.start === p.end) {
-      p.end = n.end; p.tieStart = n.tieStart;
-      if (!n.tieStart) { merged.push(p); delete pending[key]; }
-    } else {
-      if (p) { merged.push(p); delete pending[key]; }
-      if (n.tieStart) pending[key] = n; else merged.push(n);
-    }
-  });
-  Object.values(pending).forEach(p => merged.push(p));
-
-  merged.forEach(n => {
-    events.push({tick:n.start, bytes:[0x90|channel, n.pitch, 80]});
-    events.push({tick:n.end, bytes:[0x80|channel, n.pitch, 0]});
-  });
-  return events;
-}
-function buildMidiBytes(json) {
-  const sp = json['score-partwise'];
-  if (!sp) throw new Error('Unexpected JSON — no score-partwise root found.');
-  const timing = computeTiming(sp);
-  const scoreParts = ensureArray(sp['part-list'] && sp['part-list']['score-part']);
-  const parts = ensureArray(sp.part);
-  const tracks = [buildTrackChunk(buildTempoTrackEvents(timing))];
-  parts.forEach((part,i) => {
-    const spPart = scoreParts[i] || scoreParts.find(x=>x['$id']===part['$id']);
-    tracks.push(buildTrackChunk(buildPartTrackEvents(part, spPart, timing)));
-  });
-  let all = strBytes('MThd').concat(u32(6), u16(1), u16(tracks.length), u16(timing.globalDivisions||4));
-  tracks.forEach(t => { all = all.concat(t); });
-  return new Uint8Array(all);
-}
-
 /* ---------- output ---------- */
 async function downloadScore(xmlString, filename, format) {
   if (format === 'musicxml' || typeof JSZip === 'undefined') {
@@ -402,12 +272,6 @@ async function copyText(str) {
 /* ---------- flow ---------- */
 async function finish(jsonText, filename, action) {
   const json = JSON.parse(jsonText);
-  if (currentFormat === 'midi') {
-    const bytes = buildMidiBytes(json);
-    triggerDownload(new Blob([bytes], { type: 'audio/midi' }), filename);
-    setStatus('Downloaded ' + filename);
-    return;
-  }
   const xml = buildScoreXML(json);
   if (action === 'copy') {
     const ok = await copyText(xml);
@@ -424,7 +288,7 @@ async function runFetchFlow(action) {
   const scoreId = extractScoreId(url);
   if (!scoreId) return setStatus("Couldn't find a score ID in that link.", true);
   const apiUrl = 'https://flat.io/api/v2/scores/' + scoreId + '/revisions/last/json';
-  const filename = extractFilename(url, scoreId, fmtExt(currentFormat));
+  const filename = extractFilename(url, scoreId, currentFormat);
 
   $('go').disabled = true; $('copyBtn').disabled = true;
   $('fallback').style.display = 'none';
@@ -450,7 +314,7 @@ async function runPasteFlow(action) {
   if (!text) return setStatus('Paste the JSON first.', true);
   const url = $('scoreUrl').value.trim();
   const scoreId = extractScoreId(url) || 'score';
-  const filename = extractFilename(url, scoreId, fmtExt(currentFormat));
+  const filename = extractFilename(url, scoreId, currentFormat);
   try {
     setStatus('Converting…');
     await finish(text, filename, action);
